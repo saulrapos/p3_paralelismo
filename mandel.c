@@ -5,15 +5,15 @@
 
 #define DEBUG 1
 
-#define X_RESN 256
-#define Y_RESN 256
+#define X_RESN 1024
+#define Y_RESN 1024
 
 #define X_MIN -2.0
 #define X_MAX 2.0
 #define Y_MIN -2.0
 #define Y_MAX 2.0
 
-#define maxIterations 100
+#define maxIterations 1000
 
 typedef struct complextype {
     float real, imag;
@@ -115,8 +115,8 @@ int main(int argc, char **argv) {
         gettimeofday(&tf, NULL);
         fprintf(stderr, "(PERF) Time (seconds) = %lf\n", get_seconds(ti, tf));
         if (DEBUG) {
-            for (int i = 0; i < Y_RESN; i+=8) {
-                for (int j = 0; j < X_RESN; j+=8) {
+            for (int i = 0; i < Y_RESN; i++) {
+                for (int j = 0; j < X_RESN; j++) {
                     printf("%3d ", res[i][j]);
                 }
                 printf("\n");
