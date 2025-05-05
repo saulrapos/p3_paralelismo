@@ -5,80 +5,89 @@
 
 #define DEBUG 1
 
-#define X_RESN 1024
-#define Y_RESN 1024
+#define X_RESN 256 // Resolución en el eje X
+#define Y_RESN 256 // Resolución en el eje Y
 
 #define X_MIN -2.0
 #define X_MAX 2.0
 #define Y_MIN -2.0
 #define Y_MAX 2.0
 
-#define maxIterations 1000
+#define maxIterations 1000 //máximo número de iteraciones para cada punto en el conjunto de Mandelbrot
 
+//definición de una estructura para representar números complejos (real e imaginario)
 typedef struct complextype {
-    float real, imag;
+    float real, imag; //parte real e imaginaria del número complejo
 } Compl;
 
+//función auxiliar para calcular el tiempo en segundos entre dos eventos usando struct timeval
 static inline double get_seconds(struct timeval t_ini, struct timeval t_end) {
-    return (t_end.tv_usec - t_ini.tv_usec) / 1E6 + (t_end.tv_sec - t_ini.tv_sec);
+    return (t_end.tv_usec - t_ini.tv_usec) / 1E6 + (t_end.tv_sec - t_ini.tv_sec); // Calcular diferencia de tiempo en segundos
 }
 
 int main(int argc, char **argv) {
-    int rank, num_procs;
+    int rank, num_procs;  //rank: Identificador único del proceso, num_procs: número total de procesos
     MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &num_procs);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank); //obtener el identificador (rank) del proceso actual
+    MPI_Comm_size(MPI_COMM_WORLD, &num_procs); //obtener el número total de procesos
 
-    int *vres = NULL, **res = NULL;
-    int *local_vres = NULL;
-    int *sendcounts_rows = NULL, *displacements_rows = NULL;
-    int *rows_to_compute = NULL;  // array con los índices de filas asignadas a este proceso
-    int *all_rows = NULL;
-    struct timeval ti, tf;
+    struct timeval t_total1, t_total2, t_comm1, t_comm2, t_comp1, t_comp2; //variables para medir los tiempos
 
-    int remainder = Y_RESN % num_procs;
-    int rows_per_process = Y_RESN / num_procs;
+    int *vres = NULL, **res = NULL;  //variables para almacenar los resultados finales
+    int *resultado_local = NULL; //resultado local para cada proceso
+    int *array_filas_por_proceso = NULL, *inicio_filas = NULL; //arrays para manejar las filas distribuidas
+    int *indice_filas_locales = NULL; //índices de filas locales
+    int *filas_totales = NULL; //filas totales
 
-    sendcounts_rows = (int *)malloc(num_procs * sizeof(int));
-    displacements_rows = (int *)malloc(num_procs * sizeof(int));
+    int resto = Y_RESN % num_procs; //resto de filas cuando Y_RESN no es divisible por num_procs
+    int filas_por_proceso = Y_RESN / num_procs; //número de filas que le toca a cada proceso
 
-    int displacement = 0;
+    //asignación dinámica de memoria para las estructuras de filas
+    array_filas_por_proceso = (int *)malloc(num_procs * sizeof(int));
+    inicio_filas = (int *)malloc(num_procs * sizeof(int));
+
+    int desplazamiento = 0; //variable para llevar el conteo de filas procesadas
     for (int i = 0; i < num_procs; i++) {
-        sendcounts_rows[i] = rows_per_process + (i < remainder ? 1 : 0);
-        displacements_rows[i] = displacement;
-        displacement += sendcounts_rows[i];
+        array_filas_por_proceso[i] = filas_por_proceso + (i < resto ? 1 : 0); //se determina el número de filas por proceso
+        inicio_filas[i] = desplazamiento; //se guarda la fila de inicio para cada proceso
+        desplazamiento += array_filas_por_proceso[i]; //se actualiza el desplazamiento
     }
 
-    // Solo el proceso 0 genera la lista de filas (enteros)
-    if (rank == 0) {
-        all_rows = (int *)malloc(Y_RESN * sizeof(int));
+    if (rank == 0) { //
+        filas_totales = (int *)malloc(Y_RESN * sizeof(int));
         for (int i = 0; i < Y_RESN; i++) {
-            all_rows[i] = i;
+            filas_totales[i] = i; //se asignan los índices de las filas
         }
     }
 
-    int local_row_count = sendcounts_rows[rank];
-    rows_to_compute = (int *)malloc(local_row_count * sizeof(int));
-    local_vres = (int *)malloc(local_row_count * X_RESN * sizeof(int));
+    // Calcular cuántas filas le corresponden al proceso actual
+    int num_filas_locales = array_filas_por_proceso[rank];
+    indice_filas_locales = (int *)malloc(num_filas_locales * sizeof(int));
+    resultado_local = (int *)malloc(num_filas_locales * X_RESN * sizeof(int));
 
-    // ScatterV para enviar qué filas calcula cada proceso
-    MPI_Scatterv(all_rows, sendcounts_rows, displacements_rows, MPI_INT,
-                 rows_to_compute, local_row_count, MPI_INT,
-                 0, MPI_COMM_WORLD);
+    gettimeofday(&t_total1, NULL); //se inicia el contador de tiempo total
 
-    if (rank == 0) gettimeofday(&ti, NULL);
 
-    for (int r = 0; r < local_row_count; r++) {
-        int i = rows_to_compute[r];
-        for (int j = 0; j < X_RESN; j++) {
+    gettimeofday(&t_comm1, NULL); //se iniciar el contador de tiempo de comunicación
+    MPI_Scatterv(filas_totales, array_filas_por_proceso, inicio_filas, MPI_INT,
+                 indice_filas_locales, num_filas_locales, MPI_INT,
+                 0, MPI_COMM_WORLD); //se distribuyen las filas entre los procesos
+    gettimeofday(&t_comm2, NULL); //fin del contador de comunicación
+
+
+    gettimeofday(&t_comp1, NULL); //se inicia el contador de tiempo de computación
+    for (int r = 0; r < num_filas_locales; r++) {
+        int i = indice_filas_locales[r]; //se obtiene el índice de fila actual
+        for (int j = 0; j < X_RESN; j++) { // Para cada columna en la fila
             Compl z = {0.0, 0.0};
             Compl c = {
                 X_MIN + j * (X_MAX - X_MIN) / X_RESN,
                 Y_MAX - i * (Y_MAX - Y_MIN) / Y_RESN
             };
-            int k = 0;
+            int k = 0; //contador de iteraciones
             float lengthsq, temp;
 
+            //se itera hasta alcanzar el límite de escape o el máximo de iteraciones
             do {
                 temp = z.real * z.real - z.imag * z.imag + c.real;
                 z.imag = 2.0 * z.real * z.imag + c.imag;
@@ -87,11 +96,12 @@ int main(int argc, char **argv) {
                 k++;
             } while (lengthsq < 4.0 && k < maxIterations);
 
-            local_vres[r * X_RESN + j] = (k >= maxIterations) ? 0 : k;
+            resultado_local[r * X_RESN + j] = (k >= maxIterations) ? 0 : k; //se almacena el resultado de la iteración
         }
     }
+    gettimeofday(&t_comp2, NULL); //fin del contador de tiempo de computación
 
-    if (rank == 0) {
+    if (rank == 0) { //solo el proceso 0 inicializa la memoria para almacenar los resultados finales
         vres = (int *)malloc(Y_RESN * X_RESN * sizeof(int));
         res = (int **)malloc(Y_RESN * sizeof(int *));
         for (int i = 0; i < Y_RESN; i++) {
@@ -99,40 +109,58 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Para recolectar el buffer de resultados
-    int *recvcounts = (int *)malloc(num_procs * sizeof(int));
-    int *displs = (int *)malloc(num_procs * sizeof(int));
+    int *filas_recibidas = (int *)malloc(num_procs * sizeof(int));
+    int *inicio_resultado = (int *)malloc(num_procs * sizeof(int));
     for (int i = 0; i < num_procs; i++) {
-        recvcounts[i] = sendcounts_rows[i] * X_RESN;
-        displs[i] = displacements_rows[i] * X_RESN;
+        filas_recibidas[i] = array_filas_por_proceso[i] * X_RESN; //se calcula el tamaño de los datos a recibir por proceso
+        inicio_resultado[i] = inicio_filas[i] * X_RESN; //se calcula el desplazamiento en los resultados
     }
 
-    MPI_Gatherv(local_vres, local_row_count * X_RESN, MPI_INT,
-                vres, recvcounts, displs, MPI_INT,
+    gettimeofday(&t_comm1, NULL); //se inicia el contador de comunicación
+    MPI_Gatherv(resultado_local, num_filas_locales * X_RESN, MPI_INT,
+                vres, filas_recibidas, inicio_resultado, MPI_INT,
                 0, MPI_COMM_WORLD);
+    gettimeofday(&t_comm2, NULL); //fin del contador de comunicación
 
+    gettimeofday(&t_total2, NULL); //fin del contador de tiempo total
+
+    double t_total = get_seconds(t_total1, t_total2); //tiempo total
+    double t_comm = get_seconds(t_comm1, t_comm2); //tiempo de comunicación
+    double t_comp = get_seconds(t_comp1, t_comp2); //tiempo de computación
+
+    //cada proceso imprime su tiempo de computación y comunicación
+    fprintf(stderr, "RANK %d:\n  Tiempo computación = %.6lf s\n  Tiempo comunicación = %.6lf s\n",
+            rank, t_comp, t_comm);
+
+    //solo el proceso 0 imprime el tiempo total
     if (rank == 0) {
-        gettimeofday(&tf, NULL);
-        fprintf(stderr, "(PERF) Time (seconds) = %lf\n", get_seconds(ti, tf));
-        if (DEBUG) {
-            for (int i = 0; i < Y_RESN; i++) {
-                for (int j = 0; j < X_RESN; j++) {
-                    printf("%3d ", res[i][j]);
-                }
-                printf("\n");
+        fprintf(stderr, "(PERF) Time (seconds) = %lf\n", t_total);
+    }
+
+    //el proceso 0 imprime el resultado final
+    if (rank == 0 && DEBUG) {
+        for (int i = 0; i < Y_RESN; i++) {
+            for (int j = 0; j < X_RESN; j++) {
+                printf("%3d ", res[i][j]); //se imprime cada valor del conjunto de Mandelbrot
             }
+            printf("\n");
         }
+    }
+
+    //liberacióm de memoria
+    if (rank == 0) {
         free(vres);
         free(res);
-        free(all_rows);
+        free(filas_totales);
     }
 
-    free(local_vres);
-    free(rows_to_compute);
-    free(sendcounts_rows);
-    free(displacements_rows);
-    free(recvcounts);
-    free(displs);
+
+    free(resultado_local);
+    free(indice_filas_locales);
+    free(array_filas_por_proceso);
+    free(inicio_filas);
+    free(filas_recibidas);
+    free(inicio_resultado);
 
     MPI_Finalize();
     return 0;
